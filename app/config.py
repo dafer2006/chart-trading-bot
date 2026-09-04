@@ -1,20 +1,32 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     ib_host: str = "127.0.0.1"
-    ib_port: int = 7497
+    ib_port: int = 7497  # TWS paper; IB Gateway paper commonly uses 4002
     ib_client_id: int = 101
     account: str = ""
     exchange: str = "SMART"
     currency: str = "USD"
-    timeframe: str = "5 mins"
-    history_duration: str = "2 D"
+    timeframe: str = "10 mins"
+    history_duration: str = "7 D"
+
+    # Paper trading is mandatory in this build.
     paper_trading: bool = True
-    symbol: str = "AAPL"
+    symbol: str = "BIAF"
+    scan_interval_seconds: int = 60
+
     min_score: int = 4
     risk_per_trade: float = 0.01
+    paper_account_value: float = 100000.0
     atr_stop_mult: float = 1.5
     reward_risk: float = 2.0
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
 
 settings = Settings()
