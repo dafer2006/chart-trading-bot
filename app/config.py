@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     scan_interval_seconds: int = 60
 
     min_score: int = 4
+    fixed_quantity: int = 100
+    take_profit_percent: float = 10.0
     risk_per_trade: float = 0.01
     paper_account_value: float = 100000.0
     atr_stop_mult: float = 1.5
