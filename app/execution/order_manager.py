@@ -12,185 +12,114 @@ class OrderRecord:
     symbol: str
     action: str
     quantity: int
-
-    # السعر الحالي وقت ظهور الإشارة
     market_price: float
-
-    # سعر الدخول المحدد
     entry_limit: float
-
-    # وقف الخسارة
     stop: float | None
-
-    # جني الأرباح
     target: float | None
-
     status: str
-
     order_id: str = ""
 
 
 class OrderManager:
+    """Gate every order through a fresh broker-side portfolio check."""
 
     def __init__(self, broker):
-
         self.broker = broker
-
         self.records: list[OrderRecord] = []
-
-        # منع إرسال نفس الإشارة أكثر من مرة
         self.last_signal_key: str | None = None
+        self.pending_signals: dict[str, object] = {}
 
+    async def can_open_trade(self, symbol: str) -> tuple[bool, str]:
+        """Read positions/open orders immediately before sending anything."""
+        positions = await self.broker.portfolio_positions()
+        symbol = symbol.upper()
+
+        for position in positions:
+            if position["symbol"] == symbol and position["quantity"] != 0:
+                return False, f"Position already exists: {symbol}"
+
+        active = await self.broker.active_trade_count()
+        if active >= settings.max_active_trades:
+            return False, (
+                f"Trade limit reached: {active}/{settings.max_active_trades}. "
+                "Order kept inside bot."
+            )
+
+        # A second fresh position check is intentionally performed before the
+        # broker call. The worker is single-threaded for order submission, so
+        # this closes the gap between the gate and the actual send.
+        positions_again = await self.broker.portfolio_positions()
+        for position in positions_again:
+            if position["symbol"] == symbol and position["quantity"] != 0:
+                return False, f"Position appeared before send: {symbol}"
+
+        active_again = await self.broker.active_trade_count()
+        if active_again >= settings.max_active_trades:
+            return False, (
+                f"Trade limit reached before send: "
+                f"{active_again}/{settings.max_active_trades}. "
+                "Order kept inside bot."
+            )
+
+        return True, "OK"
 
     async def submit_signal(self, symbol, signal):
-
-        # =====================================================
-        # نفتح BUY فقط
-        # =====================================================
-
-        if signal.action != "BUY":
+        if signal.action != "BUY" or not signal.stop:
             return None
 
-        if not signal.stop:
-            return None
-
-
-        # =====================================================
-        # منع تكرار نفس الصفقة
-        # =====================================================
-
-        key = (
-            f"{symbol}:"
-            f"{signal.action}:"
-            f"{signal.entry:.6f}:"
-            f"{signal.stop:.6f}"
-        )
-
+        key = f"{symbol}:{signal.action}:{signal.entry:.6f}:{signal.stop:.6f}"
         if key == self.last_signal_key:
             return None
 
+        # Keep the signal internally until the fresh portfolio gate approves it.
+        self.pending_signals[symbol.upper()] = signal
 
-        # =====================================================
-        # كمية الأسهم
-        #
-        # الافتراضي 100
-        # ويمكن تغييرها من الواجهة
-        # =====================================================
+        allowed, reason = await self.can_open_trade(symbol)
+        if not allowed:
+            return None
 
         quantity = int(settings.fixed_quantity)
-
         if quantity <= 0:
             return None
 
-
-        # =====================================================
-        # السعر الحالي
-        # =====================================================
-
         market_price = float(signal.entry)
-
-
-        # =====================================================
-        # سعر الدخول
-        #
-        # أقل من السعر الحالي بـ 0.10 دولار
-        #
-        # مثال:
-        #
-        # السعر الحالي = 18.60
-        # الدخول       = 18.50
-        #
-        # =====================================================
-
-        entry_limit = round(
-            market_price - 0.10,
-            2
-        )
-
-
-        # =====================================================
-        # Take Profit
-        #
-        # الافتراضي 10%
-        #
-        # مثال:
-        #
-        # Entry = 18.50
-        # TP    = 20.35
-        #
-        # =====================================================
-
+        entry_limit = round(market_price - 0.10, 2)
         target = round(
-            entry_limit
-            * (
-                1.0
-                + settings.take_profit_percent / 100.0
-            ),
-            2
+            entry_limit * (1.0 + settings.take_profit_percent / 100.0),
+            2,
         )
 
-
-        # =====================================================
-        # إرسال LIMIT BUY إلى IBKR Paper
-        # =====================================================
-
+        # Only here, after the fresh portfolio/order checks, is anything sent
+        # to IBKR Paper.
         trade = await self.broker.place_limit_order(
             symbol,
             "BUY",
             quantity,
-            entry_limit
+            entry_limit,
         )
-
-
-        # =====================================================
-        # Order ID
-        # =====================================================
 
         order_id = str(
             getattr(
-                getattr(
-                    trade,
-                    "order",
-                    None
-                ),
+                getattr(trade, "order", None),
                 "orderId",
-                ""
+                "",
             )
         )
 
-
-        # =====================================================
-        # تسجيل الصفقة
-        # =====================================================
-
         record = OrderRecord(
-
-            time=datetime.now().isoformat(
-                timespec="seconds"
-            ),
-
+            time=datetime.now().isoformat(timespec="seconds"),
             symbol=symbol,
-
             action="BUY",
-
             quantity=quantity,
-
             market_price=market_price,
-
             entry_limit=entry_limit,
-
             stop=float(signal.stop),
-
             target=target,
-
             status="SUBMITTED",
-
             order_id=order_id,
         )
 
-
         self.records.append(record)
-
         self.last_signal_key = key
-
+        self.pending_signals.pop(symbol.upper(), None)
         return record
