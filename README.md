@@ -1,0 +1,2 @@
+# chart-trading-bot
+.commit
