@@ -2,7 +2,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from app.config import settings
-from app.risk.manager import position_size
 
 @dataclass
 class OrderRecord:
@@ -23,19 +22,25 @@ class OrderManager:
         self.last_signal_key: str | None = None
 
     async def submit_signal(self, symbol, signal):
-        if signal.action not in ("BUY", "SELL") or not signal.stop:
+        if signal.action != "BUY" or not signal.stop:
             return None
         key = f"{symbol}:{signal.action}:{signal.entry:.6f}:{signal.stop:.6f}"
         if key == self.last_signal_key:
             return None
-        account = await self.broker.account_value()
-        qty = position_size(account, signal.entry, signal.stop, settings.risk_per_trade)
+
+        # Fixed quantity is the default. The GUI can change it at runtime.
+        qty = int(settings.fixed_quantity)
         if qty <= 0:
             return None
-        trade = await self.broker.place_market_order(symbol, signal.action, qty)
+
+        entry = float(signal.entry)
+        target = entry * (1.0 + settings.take_profit_percent / 100.0)
+        trade = await self.broker.place_market_order(symbol, "BUY", qty)
         order_id = str(getattr(getattr(trade, "order", None), "orderId", ""))
-        record = OrderRecord(datetime.now().isoformat(timespec="seconds"), symbol, signal.action, qty,
-                            signal.entry, signal.stop, signal.target, "SUBMITTED", order_id)
+        record = OrderRecord(
+            datetime.now().isoformat(timespec="seconds"), symbol, "BUY", qty,
+            entry, float(signal.stop), target, "SUBMITTED", order_id
+        )
         self.records.append(record)
         self.last_signal_key = key
         return record
