@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     ib_host: str = "127.0.0.1"
-    ib_port: int = 7497  # TWS paper; IB Gateway paper commonly uses 4002
+    ib_port: int = 7497
     ib_client_id: int = 101
     account: str = ""
     exchange: str = "SMART"
@@ -11,9 +11,10 @@ class Settings(BaseSettings):
     timeframe: str = "10 mins"
     history_duration: str = "7 D"
 
-    # Paper trading is mandatory in this build.
     paper_trading: bool = True
     symbol: str = "BIAF"
+    watchlist_file: str = "watchlist.txt"
+    top_gainers_count: int = 10
     scan_interval_seconds: int = 60
 
     min_score: int = 4
