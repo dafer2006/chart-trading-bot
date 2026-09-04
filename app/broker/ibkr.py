@@ -4,7 +4,7 @@ import pandas as pd
 from app.config import settings
 
 try:
-    from ib_async import IB, Stock, MarketOrder
+    from ib_async import IB, Stock, MarketOrder, LimitOrder
 except ImportError:
     IB = Stock = MarketOrder = None
 
