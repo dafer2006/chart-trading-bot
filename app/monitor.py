@@ -3,8 +3,8 @@ import asyncio
 import logging
 from app.broker.ibkr import IBKRClient
 from app.analysis.indicators import add_indicators
-from app.analysis.patterns import detect_patterns
-from app.strategy.signal import analyze
+from app.analysis.chart_engine import add_chart_indicators, chart_context
+from app.strategy.chart_strategy import evaluate_chart
 
 log = logging.getLogger(__name__)
 
@@ -18,10 +18,12 @@ class MarketMonitor:
     async def scan_once(self):
         df = await self.client.historical_bars(self.symbol)
         df = add_indicators(df)
-        signal = analyze(df)
-        patterns = detect_patterns(df)
-        log.info("%s | %s | score=%s | patterns=%s", self.symbol, signal.action, signal.score, patterns)
-        return signal, patterns
+        df = add_chart_indicators(df)
+        signal = evaluate_chart(df)
+        context = chart_context(df)
+        log.info("%s | %s | score=%s | entry=%.4f | stop=%s | target=%s", self.symbol, signal.action, signal.score, signal.entry, signal.stop, signal.target)
+        log.info("%s | chart=%s | reasons=%s", self.symbol, context, " ; ".join(signal.reasons))
+        return signal, context
 
     async def run(self):
         self.running = True
