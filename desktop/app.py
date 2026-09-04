@@ -212,7 +212,7 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self._build_topbar())
         content_layout.addWidget(self._build_metrics())
         content_layout.addWidget(self._build_dashboard(), 1)
-        content_layout.addWidget(self._build_footer())
+        content_layout.addLayout(self._build_footer())
         root_layout.addWidget(content, 1)
         self.setCentralWidget(root)
 
