@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     min_score: int = 4
     fixed_quantity: int = 100
     take_profit_percent: float = 10.0
+
+    # Maximum number of active positions/orders created by this bot.
+    # Pending BUY orders consume a slot too, so the bot can never queue
+    # more than this number toward the broker.
+    max_active_trades: int = 7
+
     risk_per_trade: float = 0.01
     paper_account_value: float = 100000.0
     atr_stop_mult: float = 1.5
