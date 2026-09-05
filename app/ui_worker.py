@@ -1,13 +1,16 @@
 from __future__ import annotations
+
 import asyncio
+
 from PySide6.QtCore import QObject, Signal, Slot
-from app.analysis.indicators import add_indicators
+
 from app.analysis.chart_engine import add_chart_indicators, chart_context
-from app.strategy.chart_strategy import evaluate_chart
-from app.execution.order_manager import OrderManager
+from app.analysis.indicators import add_indicators
 from app.broker.ibkr import IBKRClient
-from app.scanner import load_watchlist, top_gainers, merge_candidates
 from app.config import settings
+from app.execution.order_manager import OrderManager
+from app.scanner import load_watchlist, merge_candidates, top_gainers
+from app.strategy.chart_strategy import evaluate_chart
 from app.tradingview.bridge import TradingViewBridge
 
 
@@ -15,6 +18,7 @@ class ScannerWorker(QObject):
     status = Signal(str)
     scan = Signal(object)
     order = Signal(object)
+    snapshot = Signal(object)
     error = Signal(str)
     finished = Signal()
 
@@ -38,9 +42,18 @@ class ScannerWorker(QObject):
                 df = add_indicators(df)
                 df = add_chart_indicators(df)
                 signal = evaluate_chart(df)
-                return symbol, signal, chart_context(df), None
+                context = chart_context(df)
+                chart_data = {
+                    "timestamps": [str(x) for x in df["timestamp"].tail(80).tolist()],
+                    "open": [float(x) for x in df["open"].tail(80).tolist()],
+                    "high": [float(x) for x in df["high"].tail(80).tolist()],
+                    "low": [float(x) for x in df["low"].tail(80).tolist()],
+                    "close": [float(x) for x in df["close"].tail(80).tolist()],
+                    "volume": [float(x) for x in df["volume"].tail(80).tolist()],
+                }
+                return symbol, signal, context, chart_data, None
             except Exception as e:
-                return symbol, None, None, str(e)
+                return symbol, None, None, None, str(e)
 
     async def _run(self):
         self.running = True
@@ -51,11 +64,26 @@ class ScannerWorker(QObject):
                     await self.orders.refresh_all_statuses()
                     tv_processed, tv_submitted = await self.tv.process_pending()
                     if tv_processed or tv_submitted:
-                        self.status.emit(f"TradingView queue | processed={tv_processed} | submitted={tv_submitted}")
+                        self.status.emit(
+                            f"TradingView queue | processed={tv_processed} | submitted={tv_submitted}"
+                        )
 
                     positions = await self.client.portfolio_positions()
                     open_orders = await self.client.open_orders()
                     executed = self.orders.store.executed_count(settings.execution_count_scope)
+                    account_value = None
+                    try:
+                        account_value = await self.client.account_value()
+                    except Exception:
+                        pass
+                    self.snapshot.emit({
+                        "connected": True,
+                        "positions": positions,
+                        "open_orders": open_orders,
+                        "executed": executed,
+                        "maximum": settings.max_executed_orders,
+                        "account_value": account_value,
+                    })
                     self.status.emit(
                         f"Portfolio verified | positions={len(positions)} | open orders={len(open_orders)} | executed={executed}/{settings.max_executed_orders}"
                     )
@@ -64,11 +92,16 @@ class ScannerWorker(QObject):
                     custom = load_watchlist(settings.watchlist_file)
                     symbols = merge_candidates(gainers, custom)
                     results = await asyncio.gather(*(self.analyze_symbol(s) for s in symbols))
-                    for symbol, signal, context, error in results:
+                    for symbol, signal, context, chart_data, error in results:
                         if error:
                             self.error.emit(f"{symbol}: {error}")
                             continue
-                        self.scan.emit({"symbol": symbol, "signal": signal, "context": context})
+                        self.scan.emit({
+                            "symbol": symbol,
+                            "signal": signal,
+                            "context": context,
+                            "chart": chart_data,
+                        })
                         if signal.action != "BUY" or signal.stop is None:
                             continue
                         record = await self.orders.submit_signal(symbol, signal, source="scanner")
