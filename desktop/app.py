@@ -27,6 +27,7 @@ QLabel#Section { color:#dbeafe; font-size:10pt; font-weight:850; }
 QLabel#MT { color:#7890ad; font-size:8pt; font-weight:750; }
 QLabel#MV { color:#f8fafc; font-size:15pt; font-weight:900; }
 QLabel#Muted { color:#8da0b8; }
+QLabel#StatusValue { color:#dbeafe; font-weight:750; }
 QLabel#Good { color:#34d399; font-weight:850; }
 QLabel#Warn { color:#fbbf24; font-weight:850; }
 QLabel#Bad { color:#fb7185; font-weight:850; }
@@ -78,11 +79,11 @@ class Metric(QFrame):
 
 
 class MarketChart(QWidget):
-    """Lightweight native Qt chart: candles + EMA50 + volume strip."""
+    """Native Qt chart: candles, EMA50 and volume."""
     def __init__(self):
         super().__init__()
         self.data = {}
-        self.setMinimumHeight(300)
+        self.setMinimumHeight(320)
 
     def set_data(self, data):
         self.data = data or {}
@@ -94,7 +95,7 @@ class MarketChart(QWidget):
         r = self.rect().adjusted(12, 10, -12, -10)
         p.fillRect(r, QColor('#08111e'))
         p.setPen(QPen(QColor('#1a2940'), 1))
-        chart_h = int(r.height() * 0.78)
+        chart_h = int(r.height() * 0.76)
         chart = r.adjusted(0, 0, 0, -(r.height() - chart_h))
         volume = r.adjusted(0, chart_h + 8, 0, 0)
 
@@ -104,19 +105,17 @@ class MarketChart(QWidget):
         lows = list(self.data.get('low') or [])
         volumes = list(self.data.get('volume') or [])
         ema = list(self.data.get('ema50') or [])
-
         n = min(len(closes), len(opens), len(highs), len(lows))
         if n < 2:
             p.setPen(QPen(QColor('#70839d'), 1))
             p.drawText(r, Qt.AlignCenter, 'Waiting for historical market data')
             return
 
-        closes, opens, highs, lows = closes[-80:], opens[-80:], highs[-80:], lows[-80:]
-        volumes = volumes[-80:] if volumes else []
-        ema = ema[-80:] if ema else []
+        closes, opens, highs, lows = closes[-90:], opens[-90:], highs[-90:], lows[-90:]
+        volumes = volumes[-90:] if volumes else []
+        ema = ema[-90:] if ema else []
         n = min(len(closes), len(opens), len(highs), len(lows))
-        lo = min(lows[:n])
-        hi = max(highs[:n])
+        lo, hi = min(lows[:n]), max(highs[:n])
         span = hi - lo or 1.0
 
         def y(v):
@@ -133,11 +132,11 @@ class MarketChart(QWidget):
             yo, yc = y(opens[i]), y(closes[i])
             yh, yl = y(highs[i]), y(lows[i])
             rising = closes[i] >= opens[i]
-            pen_color = QColor('#34d399' if rising else '#fb7185')
-            p.setPen(QPen(pen_color, 1))
+            c = QColor('#34d399' if rising else '#fb7185')
+            p.setPen(QPen(c, 1))
             p.drawLine(x, yh, x, yl)
             top, bottom = min(yo, yc), max(yo, yc)
-            p.fillRect(x - body_w // 2, top, body_w, max(2, bottom - top), pen_color)
+            p.fillRect(x - body_w // 2, top, body_w, max(2, bottom - top), c)
 
         if len(ema) >= n:
             pts = []
@@ -177,6 +176,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1180, 760)
         self.thread = None
         self.worker = None
+        self.emergency_active = False
+        self.broker_live = False
         self._build_ui()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.clock)
@@ -330,7 +331,6 @@ class MainWindow(QMainWindow):
         pl.addLayout(h)
         self.chart = MarketChart()
         pl.addWidget(self.chart, 1)
-
         grid = QGridLayout()
         self.ctx = {}
         for i, (title, key) in enumerate([
@@ -374,14 +374,14 @@ class MainWindow(QMainWindow):
         l.setSpacing(10)
 
         p, pl = panel('EXECUTION GATE')
-        self.gate = lab('WAITING', 'Warn')
+        self.gate = lab('WAITING — BROKER OFFLINE', 'Warn')
         self.gate.setMinimumHeight(28)
         pl.addWidget(self.gate)
         self.bar = QProgressBar()
         self.bar.setRange(0, settings.max_executed_orders)
         self.bar.setValue(0)
         pl.addWidget(self.bar)
-        self.gate_detail = lab('No broker verification yet.', 'Muted')
+        self.gate_detail = lab('No broker verification yet. Orders fail closed.', 'Muted')
         self.gate_detail.setWordWrap(True)
         pl.addWidget(self.gate_detail)
         l.addWidget(p)
@@ -413,7 +413,6 @@ class MainWindow(QMainWindow):
     def _portfolio_page(self):
         w = QWidget()
         l = QVBoxLayout(w)
-        p, pl = panel('PORTFOLIO')
         g = QGridLayout()
         self.account = Metric('NET LIQUIDATION', '—', 'IBKR account')
         self.pc = Metric('ACTIVE POSITIONS', '—', f'Max {settings.max_active_positions}')
@@ -421,10 +420,9 @@ class MainWindow(QMainWindow):
         g.addWidget(self.account, 0, 0)
         g.addWidget(self.pc, 0, 1)
         g.addWidget(self.po, 0, 2)
-        pl.addLayout(g)
-        l.addWidget(p)
+        l.addLayout(g)
         q, ql = panel('LIVE POSITIONS')
-        self.positions = self._table(['Symbol', 'Quantity', 'Source'])
+        self.positions = self._table(['Symbol', 'Quantity', 'Broker'])
         ql.addWidget(self.positions)
         l.addWidget(q, 1)
         return w
@@ -530,10 +528,14 @@ class MainWindow(QMainWindow):
 
     def log_line(self, text):
         self.log.appendPlainText(f'[{datetime.now().strftime("%H:%M:%S")}] {text}')
+        self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
 
     def start(self):
         if self.thread and self.thread.isRunning():
             return
+        if self.emergency_active:
+            self.emergency_active = False
+            self.log_line('Emergency stop reset — new scanner session allowed')
         try:
             qty = int(self.qty.text())
             tp = float(self.tp.text())
@@ -567,9 +569,11 @@ class MainWindow(QMainWindow):
         self.interval.setEnabled(False)
         self.side_ibkr.setText('IBKR  CONNECTING')
         self.side_ibkr.setObjectName('Warn')
+        self._refresh_style(self.side_ibkr)
         self.log_line('Scanner started — waiting for fresh IBKR verification')
 
     def stop(self):
+        self.emergency_active = True
         if self.worker:
             self.worker.stop()
         self.stop_btn.setEnabled(False)
@@ -577,7 +581,13 @@ class MainWindow(QMainWindow):
         self.qty.setEnabled(True)
         self.tp.setEnabled(True)
         self.interval.setEnabled(True)
-        self.log_line('Scanner stop requested')
+        self.status.setText('Emergency stop active — no new scanner orders')
+        self.log_line('EMERGENCY STOP — scanner stopped; new orders will not be sent')
+        self.gate.setText('EMERGENCY STOP')
+        self.m_gate.value.setText('STOPPED')
+        self.m_gate.sub.setText('New submissions disabled')
+        self._refresh_style(self.gate)
+        self._refresh_style(self.m_gate.value)
 
     def on_snapshot(self, data):
         positions = data.get('positions') or []
@@ -585,20 +595,31 @@ class MainWindow(QMainWindow):
         executed = int(data.get('executed') or 0)
         maximum = int(data.get('maximum') or settings.max_executed_orders)
         account = data.get('account_value')
+        connected = bool(data.get('connected'))
+        if not connected:
+            self.disconnected()
+            return
 
+        self.broker_live = True
         self.m_ibkr.value.setText('CONNECTED')
         self.m_ibkr.sub.setText('Fresh broker snapshot')
         self.m_ibkr.value.setObjectName('Good')
-        self.side_ibkr.setText('IBKR  CONNECTED')
-        self.side_ibkr.setObjectName('Good')
         self.m_pos.value.setText(str(len(positions)))
+        self.m_pos.sub.setText('LIVE • fresh snapshot')
         self.m_open.value.setText(str(len(opens)))
+        self.m_open.sub.setText('LIVE • fresh snapshot')
         self.m_exec.value.setText(f'{executed} / {maximum}')
+        self.m_exec.sub.setText(f'Scope: {settings.execution_count_scope}')
         self.bar.setMaximum(maximum)
         self.bar.setValue(min(executed, maximum))
         self.account.value.setText(f'${account:,.2f}' if account is not None else '—')
-        self.pc.value.setText(str(len(positions)))
-        self.po.value.setText(str(len(opens)))
+        self.account.sub.setText('IBKR Net Liquidation' if account is not None else 'Account value unavailable')
+        self.pc.value.setText(f'{len(positions)} / {settings.max_active_positions}')
+        self.po.value.setText(f'{len(opens)} / {settings.max_open_orders}')
+        self.side_ibkr.setText('IBKR  CONNECTED')
+        self.side_ibkr.setObjectName('Good')
+        self._refresh_style(self.side_ibkr)
+        self._refresh_style(self.m_ibkr.value)
 
         self.positions.setRowCount(0)
         for pos in positions:
@@ -607,14 +628,32 @@ class MainWindow(QMainWindow):
         for trade in opens:
             self._add_trade(self.all_orders, trade)
 
-        detail = (
-            f'POSITIONS {len(positions)}/{settings.max_active_positions}  •  '
-            f'OPEN ORDERS {len(opens)}/{settings.max_open_orders}  •  '
-            f'EXECUTED {executed}/{maximum}'
+        if len(positions) >= settings.max_active_positions:
+            gate_reason = f'Position limit reached: {len(positions)}/{settings.max_active_positions}. New BUY orders stay inside bot.'
+            gate_state = 'BLOCKED / POSITION LIMIT'
+        elif len(opens) >= settings.max_open_orders:
+            gate_reason = f'Open-order limit reached: {len(opens)}/{settings.max_open_orders}. New orders stay inside bot.'
+            gate_state = 'BLOCKED / OPEN ORDER LIMIT'
+        elif executed >= maximum:
+            gate_reason = f'Executed-order limit reached: {executed}/{maximum}. New orders stay inside bot.'
+            gate_state = 'BLOCKED / EXECUTED LIMIT'
+        else:
+            gate_reason = 'Fresh Positions + Open Orders verified. Individual signal and risk gates still required.'
+            gate_state = 'VERIFIED'
+
+        self.gate_detail.setText(
+            f'{gate_reason}\nPositions {len(positions)}/{settings.max_active_positions}  •  '
+            f'Open Orders {len(opens)}/{settings.max_open_orders}  •  Executed {executed}/{maximum}'
         )
-        self.gate_detail.setText(detail)
         self.risk_state.setText('BROKER VERIFIED — EXECUTION MAY PROCEED IF ALL GATES PASS')
         self.risk_state.setObjectName('Good')
+        if not self.emergency_active:
+            self.gate.setText(gate_state)
+            self.m_gate.value.setText('BLOCKED' if gate_state.startswith('BLOCKED') else 'VERIFIED')
+            self.m_gate.sub.setText('Position/Open/Risk limits' if gate_state.startswith('BLOCKED') else 'Fresh broker snapshot')
+            self._refresh_style(self.gate)
+            self._refresh_style(self.m_gate.value)
+        self._refresh_style(self.risk_state)
 
     def _add_position(self, pos):
         r = self.positions.rowCount()
@@ -624,8 +663,10 @@ class MainWindow(QMainWindow):
             self.positions.setItem(r, i, QTableWidgetItem(str(v)))
 
     def _add_trade(self, table, trade):
+        row = table.rowCount()
+        table.insertRow(row)
         order = getattr(trade, 'order', None)
-        status = getattr(getattr(trade, 'orderStatus', None), 'status', '') or ''
+        status = getattr(getattr(trade, 'orderStatus', None), 'status', '') or 'UNKNOWN'
         filled = getattr(getattr(trade, 'orderStatus', None), 'filled', 0) or 0
         contract = getattr(trade, 'contract', None)
         vals = [
@@ -636,12 +677,6 @@ class MainWindow(QMainWindow):
             filled, getattr(order, 'orderId', '') if order else ''
         ]
         for i, value in enumerate(vals[:table.columnCount()]):
-            table.setItem(table.rowCount(), i, QTableWidgetItem(str(value)))
-        table.insertRow(table.rowCount())
-        table.removeRow(table.rowCount() - 1)
-        row = table.rowCount()
-        table.insertRow(row)
-        for i, value in enumerate(vals[:table.columnCount()]):
             table.setItem(row, i, QTableWidgetItem(str(value)))
 
     def on_status(self, text):
@@ -650,32 +685,38 @@ class MainWindow(QMainWindow):
         if 'TradingView queue' in text:
             self.side_tv.setText('TRADINGVIEW  ACTIVE')
             self.side_tv.setObjectName('Good')
+            self._refresh_style(self.side_tv)
         if 'ORDER SUBMITTED' in text:
             self.gate.setText('ORDER SUBMITTED')
             self.gate.setObjectName('Good')
             self.m_gate.value.setText('SUBMITTED')
+            self.analysis['Execution'].setText('ORDER SUBMITTED')
         elif 'kept inside bot' in text:
             self.gate.setText('BLOCKED / QUEUED')
             self.gate.setObjectName('Warn')
             self.m_gate.value.setText('BLOCKED')
-            self.gate_detail.setText(text)
-            self.analysis['Execution'].setText('HELD INSIDE BOT')
-        elif 'Portfolio verified' in text:
-            self.gate.setText('VERIFIED')
-            self.gate.setObjectName('Good')
-            self.m_gate.value.setText('VERIFIED')
+            self.m_gate.sub.setText('Order held inside bot')
+            self.gate_detail.setText(text + '\nNo IBKR submission was made.')
+            self.analysis['Execution'].setText('HELD INSIDE BOT — NO IBKR SUBMISSION')
+        elif 'Portfolio verified' in text and not self.emergency_active:
+            if self.broker_live:
+                self.m_gate.value.setText('VERIFIED')
+                self.m_gate.sub.setText('Fresh broker snapshot')
         elif 'Disconnected' in text:
             self.disconnected()
         self._refresh_style(self.gate)
         self._refresh_style(self.m_gate.value)
 
     def disconnected(self):
+        self.broker_live = False
         self.m_ibkr.value.setText('DISCONNECTED')
         self.m_ibkr.sub.setText('No live broker data')
+        self.m_ibkr.value.setObjectName('Bad')
         self.m_pos.value.setText('—')
         self.m_pos.sub.setText('Waiting for broker')
         self.m_open.value.setText('—')
         self.m_open.sub.setText('Waiting for broker')
+        self.m_exec.sub.setText('Broker snapshot unavailable')
         self.m_gate.value.setText('WAITING')
         self.m_gate.sub.setText('Fail-closed')
         self.gate.setText('WAITING — BROKER OFFLINE')
@@ -684,13 +725,20 @@ class MainWindow(QMainWindow):
         self.all_orders.setRowCount(0)
         self.side_ibkr.setText('IBKR  OFFLINE')
         self.side_ibkr.setObjectName('Bad')
+        self.risk_state.setText('WAITING FOR BROKER VERIFICATION')
+        self.risk_state.setObjectName('Warn')
         self._refresh_style(self.side_ibkr)
+        self._refresh_style(self.m_ibkr.value)
+        self._refresh_style(self.gate)
+        self._refresh_style(self.m_gate.value)
+        self._refresh_style(self.risk_state)
 
     def on_error(self, text):
         self.status.setText('Error: ' + text)
         self.gate.setText('FAIL-CLOSED')
         self.m_gate.value.setText('FAIL-CLOSED')
-        self.gate_detail.setText(text)
+        self.m_gate.sub.setText('Broker/engine error')
+        self.gate_detail.setText(text + '\nNo order may be submitted from this failed cycle.')
         self.log_line('ERROR: ' + text)
         self._refresh_style(self.gate)
         self._refresh_style(self.m_gate.value)
@@ -705,7 +753,7 @@ class MainWindow(QMainWindow):
         self.chart_state.setText(f'Signal: {signal.action}  •  Score: {signal.score}')
         self.chart_change.setText('LIVE ANALYSIS')
         chart_payload = dict(chart)
-        chart_payload['ema50'] = self._numeric_series(ctx.get('ema50'))
+        chart_payload['ema50'] = chart.get('ema50') or []
         self.chart.set_data(chart_payload)
         self.m_sig.value.setText(signal.action)
         self.m_sig.sub.setText(f'{symbol} • score {signal.score}')
@@ -715,17 +763,19 @@ class MainWindow(QMainWindow):
         if signal.stop is not None and target is not None and signal.entry != signal.stop:
             rr = f'1 : {abs(target - signal.entry) / abs(signal.entry - signal.stop):.2f}'
         reasons = ' • '.join(signal.reasons) if signal.reasons else '—'
+        execution = 'SELL HELD — exit manager pending' if signal.action == 'SELL' else ('BUY CANDIDATE — pending gate' if signal.action == 'BUY' else 'HOLD — no execution')
         values = [
             ('Signal', signal.action), ('Score', signal.score), ('Entry', f'{signal.entry:.4f}'),
             ('Stop', f'{signal.stop:.4f}' if signal.stop is not None else '—'),
             ('Target', f'{target:.4f}' if target is not None else '—'), ('R:R', rr),
-            ('Reasons', reasons), ('Execution', 'SELL HELD — exit manager pending' if signal.action == 'SELL' else 'PENDING GATE')
+            ('Reasons', reasons), ('Execution', execution)
         ]
         for key, value in values:
             self.analysis[key].setText(str(value))
 
         self.ai_title.setText(f'{symbol} — {signal.action} — Score {signal.score}')
         self.ai_state.setText('BUY CANDIDATE' if signal.action == 'BUY' else ('SELL SIGNAL — HELD' if signal.action == 'SELL' else 'HOLD'))
+        self.ai_state.setObjectName('Good' if signal.action == 'BUY' else ('Bad' if signal.action == 'SELL' else 'Warn'))
         self.ai_reason.setText(reasons)
         self.ai_table.setRowCount(0)
         for key, value in ctx.items():
@@ -733,6 +783,7 @@ class MainWindow(QMainWindow):
             self.ai_table.insertRow(row)
             self.ai_table.setItem(row, 0, QTableWidgetItem(str(key)))
             self.ai_table.setItem(row, 1, QTableWidgetItem(str(value)))
+        self._refresh_style(self.ai_state)
 
         for key, widget in self.ctx.items():
             value = ctx.get(key)
@@ -745,10 +796,14 @@ class MainWindow(QMainWindow):
 
         if ctx.get('above_cloud'):
             self.cloud.setText('Cloud: ABOVE — bullish structure')
+            self.cloud.setObjectName('Good')
         elif ctx.get('below_cloud'):
             self.cloud.setText('Cloud: BELOW — bearish structure')
+            self.cloud.setObjectName('Bad')
         else:
             self.cloud.setText('Cloud: —')
+            self.cloud.setObjectName('Muted')
+        self._refresh_style(self.cloud)
 
         row = next((i for i in range(self.scan_table.rowCount()) if self.scan_table.item(i, 0) and self.scan_table.item(i, 0).text() == symbol), -1)
         if row < 0:
@@ -763,12 +818,6 @@ class MainWindow(QMainWindow):
         ]
         for i, value in enumerate(vals):
             self.scan_table.setItem(row, i, QTableWidgetItem(str(value)))
-
-    @staticmethod
-    def _numeric_series(value):
-        if isinstance(value, list):
-            return value
-        return []
 
     def on_order(self, record):
         for table in (self.orders, self.all_orders):
